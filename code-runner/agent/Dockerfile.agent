@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+# Отключаем буферизацию вывода (чтобы логи появлялись мгновенно)
+ENV PYTHONUNBUFFERED=1
+# Запрещаем создание .pyc файлов (экономит место и права записи)
+ENV PYTHONDONTWRITEBYTECODE=1
+
+RUN pip install --no-cache-dir pandas numpy scikit-learn
+
+# Создаем пользователя 'student' с UID 1000
+RUN useradd -m -u 1000 student
+
+WORKDIR /app
+
+# Копируем скрипты. Владельцем останется root (по умолчанию).
+# Студент (user student) сможет их читать, но не сможет изменить/удалить.
+COPY universal_inspector.py /app/inspector.py
+COPY limited_stream.py /app/limited_stream.py
+
+# Переключение пользователя
+USER student
