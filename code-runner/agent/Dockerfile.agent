@@ -14,8 +14,8 @@ WORKDIR /app
 
 # Копируем скрипты. Владельцем останется root (по умолчанию).
 # Студент (user student) сможет их читать, но не сможет изменить/удалить.
-COPY universal_inspector.py /app/inspector.py
-COPY limited_stream.py /app/limited_stream.py
+COPY inspector.py /app/inspector.py
+COPY utils.py /app/utils.py
 
 # Переключение пользователя
 USER student

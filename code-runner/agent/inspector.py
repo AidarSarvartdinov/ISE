@@ -7,6 +7,8 @@ import time
 import builtins
 import argparse
 import json
+import cProfile
+import pstats
 from typing import TypedDict, Optional, Callable, Any
 from utils import LimitedStream
 
@@ -25,6 +27,7 @@ class CodeResult(TypedDict):
     memory_peak_mb: Optional[float]
     execution_time: Optional[float]
     variables: Optional[dict]
+    hotspots: list
 
 
 # HELPERS
@@ -93,6 +96,28 @@ def serialize_variables(locals_dict: dict[str, any], max_vars=50) -> dict:
     return clean_vars
 
 
+def get_hotspots(profile: cProfile.Profile):
+    ps = pstats.Stats(profile)
+    hotspots = []
+    for func_tuple, stats in ps.stats.items():
+        file_name, line, func = func_tuple
+        cc, nc, tt, ct, callers = stats
+
+        # Filter
+        if "inspector" in file_name or "utils" in file_name:
+            continue
+        if getattr(ps, 'stream', None):
+            pass
+
+        hotspots.append({
+            "func": str(func),
+            "calls": nc,
+            "time": ct
+        })
+
+        hotspots.sort(key=lambda x: x['time'], reverse=True)
+        return hotspots
+
 def safe_import(name, *args, **kwargs):
     if name in ['os', 'subprocess', 'shutil', 'sys', 'importlib', 'inspect']:
         raise ImportError(f"Security: Import of '{name}' is forbidden.")
@@ -112,6 +137,8 @@ def worker_process(user_code: str, blacklist: list[ForbiddenMethod], return_queu
     _trace_stop = tracemalloc.stop
     _trace_get = tracemalloc.get_traced_memory
 
+    profile = cProfile.Profile()
+
     result: CodeResult = {
         "success": False,
         "output": "",
@@ -119,7 +146,8 @@ def worker_process(user_code: str, blacklist: list[ForbiddenMethod], return_queu
         "truncated": False,
         "memory_peak_mb": 0,
         "execution_time": 0,
-        "variables": {}
+        "variables": {},
+        "hotspots": []
     }
 
     # Monkey Patching
@@ -155,6 +183,7 @@ def worker_process(user_code: str, blacklist: list[ForbiddenMethod], return_queu
     try:
         # Compile separately to distinguish SyntaxError from Runtime Errors
         compiled_code = compile(user_code, "<student_code>", "exec")
+        profile.enable()
         exec(compiled_code, user_globals, user_locals)
         result['success'] = True
         result['variables'] = serialize_variables(user_locals)
@@ -165,6 +194,7 @@ def worker_process(user_code: str, blacklist: list[ForbiddenMethod], return_queu
         result['error'] = "".join(traceback.format_list(clean_tb)) + error_msg
     finally:
         end_time = _timer()
+        profile.disable()
         _, peak = _trace_get()
         _trace_stop()
 
@@ -175,6 +205,7 @@ def worker_process(user_code: str, blacklist: list[ForbiddenMethod], return_queu
         result["truncated"] = captured_output.truncated
         result["memory_peak_mb"] = peak/1024/1024
         result['execution_time'] = end_time - start_time
+        result['hotspots'] = get_hotspots(profile)[:5]
 
         return_queue.put(result)
 
@@ -198,7 +229,8 @@ def universal_inspector(user_code: str, blacklist: list[ForbiddenMethod], timeou
             "truncated": False,
             "memory_peak_mb": None,
             "execution_time": timeout_seconds,
-            "variables": {}
+            "variables": {},
+            "hotspots": []
         }
     
     # If the process has completed itself, take the result from the queue.
@@ -213,7 +245,8 @@ def universal_inspector(user_code: str, blacklist: list[ForbiddenMethod], timeou
             "truncated": False,
             "memory_peak_mb": None,
             "execution_time": None,
-            "variables": {}
+            "variables": {},
+            "hotspots": []
         }
 
 
@@ -227,7 +260,17 @@ if __name__ == "__main__":
         with open(args.code_path, 'r', encoding="utf-8") as f:
             user_code = f.read()
     except FileNotFoundError:
-        print(json.dumps({"success": False, "error": "System Error: Code file not found"}))
+        print(json.dumps({
+            "success": False,
+            "error": f"System Error: Code file not found at {args.code_path}",
+            "output": "",
+            "truncated": False,
+            "memory_peak_mb": 0,
+            "execution_time": 0,
+            "variables": {},
+            "system_error": "",
+            "hotspots": []
+        }, ensure_ascii=False))
         sys.exit(1)
 
     try:
